@@ -11,6 +11,9 @@ class ActivityMerger:
         self.output_path = output_path
         self.custom_name = custom_name
 
+        # Načítanie zo súboru .env (default: 10.0 s)
+        self.max_time_diff = float(os.getenv("MAX_TIME_DIFF_SEC", "10"))
+
     def _get_start_time(self, file_path):
         """Extracts the start_time from the session message of a FIT file."""
         with fitdecode.FitReader(file_path) as fit:
@@ -40,12 +43,12 @@ class ActivityMerger:
             else:
                 time_diff = abs(float(garmin_start) - float(zwift_start))
 
-            print(f"   Time difference: {time_diff:.1f} seconds")
+            print(f"   Time difference: {time_diff:.1f} seconds (Max allowed: {self.max_time_diff:.1f}s)")
 
-            if time_diff > 10:
+            if time_diff > self.max_time_diff:
                 raise ValueError(
                     f"Validation Error: Garmin and Zwift files do not match! "
-                    f"Time difference is {time_diff:.1f}s (max allowed is 10s)."
+                    f"Time difference is {time_diff:.1f}s (max allowed is {self.max_time_diff:.1f}s)."
                 )
             print("   ✅ Time validation passed successfully!")
         else:
