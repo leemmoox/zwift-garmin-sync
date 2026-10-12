@@ -4,8 +4,8 @@ import sys
 
 from dotenv import load_dotenv
 
+from lib.fit import ActivityMerger
 from lib.garmin import Garmin
-from lib.merger import ActivityMerger
 from lib.zwift import Zwift
 
 FIT_DIR = "fit"

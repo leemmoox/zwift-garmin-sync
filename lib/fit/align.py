@@ -17,7 +17,7 @@ from fit_tool.profile.messages.session_message import SessionMessage
 from fit_tool.profile.messages.time_in_zone_message import TimeInZoneMessage
 from fit_tool.record import Record, RecordHeader
 
-from lib.fit_utils import (
+from lib.fit.utils import (
     FIT_EPOCH_OFFSET,
     SEMICIRCLES_TO_DEG,
     add_field_definitions,

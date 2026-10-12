@@ -3,10 +3,10 @@ from datetime import datetime, timezone
 
 from fit_tool.fit_file import FitFile
 
-from lib.align import Aligner, ride_window
-from lib.enrich import apply_zwift_data
-from lib.verify import verify_output
-from lib.zwift_fit import read_zwift_fit
+from lib.fit.align import Aligner, ride_window
+from lib.fit.enrich import apply_zwift_data
+from lib.fit.verify import verify_output
+from lib.fit.zwift_track import read_zwift_fit
 
 
 class ActivityMerger:

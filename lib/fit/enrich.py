@@ -7,7 +7,7 @@ from fit_tool.profile.messages.session_message import SessionMessage
 from fit_tool.profile.messages.sport_message import SportMessage
 from fit_tool.profile.profile_type import Sport, SubSport
 
-from lib.fit_utils import SEMICIRCLES_TO_DEG, add_field_definitions, secs, set_field
+from lib.fit.utils import SEMICIRCLES_TO_DEG, add_field_definitions, secs, set_field
 
 # Fields written into Garmin messages. Missing ones (e.g. GPS/altitude, which the watch
 # does not record indoors) are added to the message definitions before writing.
