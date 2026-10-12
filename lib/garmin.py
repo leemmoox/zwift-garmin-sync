@@ -1,21 +1,25 @@
-import os
 import io
+import os
 import time
 import zipfile
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
 from dotenv import load_dotenv
 from garminconnect import Garmin as GarminClient
+
 
 class Garmin:
     def __init__(self, email=None, password=None):
         load_dotenv()
         self.email = email or os.getenv("GARMIN_EMAIL")
         self.password = password or os.getenv("GARMIN_PASSWORD")
-        
+
         if not self.email or not self.password:
-            raise ValueError("Garmin credentials (GARMIN_EMAIL, GARMIN_PASSWORD) are missing in environment variables.")
-            
+            raise ValueError(
+                "Garmin credentials (GARMIN_EMAIL, GARMIN_PASSWORD) are missing in environment variables."
+            )
+
         self.client = None
         self._authenticate()
 
@@ -23,13 +27,13 @@ class Garmin:
         """Authenticates with Garmin Connect using token caching to avoid 429 rate limits."""
         print("Authenticating with Garmin Connect...")
         tokenstore = str(Path("~/.garminconnect").expanduser())
-        
+
         try:
             self.client = GarminClient(self.email, self.password)
             self.client.login(tokenstore)
             print("✅ Successfully authenticated with Garmin Connect!")
         except Exception as e:
-            raise Exception(f"Garmin authentication failed: {e}")
+            raise Exception(f"Garmin authentication failed: {e}") from e
 
     def download_latest_activity_fit(self, folder="fit") -> tuple[str, str, str]:
         """
@@ -37,17 +41,17 @@ class Garmin:
         Returns tuple: (activity_id, file_path, formatted_timestamp)
         """
         os.makedirs(folder, exist_ok=True)
-        
+
         print("Fetching latest activities from Garmin Connect...")
         activities = self.client.get_activities(0, 1)
-        
+
         if not activities:
             raise Exception("No activities found on Garmin Connect.")
-            
+
         latest = activities[0]
         activity_id = str(latest.get("activityId"))
         activity_name = latest.get("activityName", "Unknown Activity")
-        
+
         start_str = latest.get("startTimeLocal", "")
         dt = datetime.strptime(start_str, "%Y-%m-%d %H:%M:%S")
         timestamp = dt.strftime("%Y%m%d-%H%M")
@@ -62,14 +66,20 @@ class Garmin:
             return activity_id, file_path, timestamp
 
         print(f"Downloading raw data for activity ID {activity_id} ({timestamp})...")
-        data = self.client.download_activity(activity_id, dl_fmt=self.client.ActivityDownloadFormat.ORIGINAL)
-        
-        if data[:2] == b'PK':
+        data = self.client.download_activity(
+            activity_id, dl_fmt=self.client.ActivityDownloadFormat.ORIGINAL
+        )
+
+        if data[:2] == b"PK":
             print("Extracted data is a ZIP archive. Unpacking FIT file...")
             with zipfile.ZipFile(io.BytesIO(data)) as z:
-                fit_filenames = [name for name in z.namelist() if name.lower().endswith('.fit')]
+                fit_filenames = [
+                    name for name in z.namelist() if name.lower().endswith(".fit")
+                ]
                 if not fit_filenames:
-                    raise Exception("No .fit file found inside the downloaded Garmin ZIP archive.")
+                    raise Exception(
+                        "No .fit file found inside the downloaded Garmin ZIP archive."
+                    )
                 fit_data = z.read(fit_filenames[0])
             print("✅ FIT file successfully unpacked from ZIP archive!")
         else:
@@ -77,37 +87,68 @@ class Garmin:
 
         with open(file_path, "wb") as f:
             f.write(fit_data)
-            
+
         print(f"✅ Garmin FIT file successfully saved as '{file_path}'!")
         return activity_id, file_path, timestamp
 
-    def upload_activity(self, file_path: str, activity_name: str = None):
-        """Uploads a fixed FIT file to Garmin Connect and updates its name via API."""
+    def upload_activity(
+        self, file_path: str, activity_name: str = None, start_time: datetime = None
+    ):
+        """Uploads a fixed FIT file to Garmin Connect and updates its name via API.
+
+        start_time (UTC) identifies the new activity if the upload response does not contain its ID.
+        """
         print(f"Uploading fixed FIT file '{file_path}' to Garmin Connect...")
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File to upload not found: {file_path}")
-            
+
         try:
             upload_response = self.client.upload_activity(file_path)
-            print("✅ Activity successfully uploaded to Garmin Connect!")
-            
-            if activity_name:
-                time.sleep(3) # Pauza pre indexáciu na serveri
-                activities = self.client.get_activities(0, 1)
-                if activities:
-                    new_activity_id = activities[0].get("activityId")
-                    self.client.set_activity_name(new_activity_id, activity_name)
-                    print(f"✨ Activity {new_activity_id} successfully renamed to '{activity_name}'!")
-                        
-            return upload_response
         except Exception as e:
-            raise Exception(f"Failed to upload activity to Garmin Connect: {e}")
+            raise Exception(f"Failed to upload activity to Garmin Connect: {e}") from e
+        print("✅ Activity successfully uploaded to Garmin Connect!")
+
+        if activity_name:
+            new_activity_id = self._find_uploaded_activity_id(upload_response, start_time)
+            if new_activity_id:
+                self.client.set_activity_name(new_activity_id, activity_name)
+                print(
+                    f"✨ Activity {new_activity_id} successfully renamed to '{activity_name}'!"
+                )
+            else:
+                print(
+                    f"⚠️ Could not find the uploaded activity; rename it manually to '{activity_name}'."
+                )
+
+        return upload_response
+
+    def _find_uploaded_activity_id(self, upload_response, start_time, timeout_sec=60):
+        """Gets the new activity ID from the upload response, or waits for an activity with the same start time."""
+        result = (upload_response or {}).get("detailedImportResult", {})
+        successes = result.get("successes") or []
+        if successes and successes[0].get("internalId"):
+            return successes[0]["internalId"]
+
+        if start_time is None:
+            return None
+
+        # Garmin processes uploads asynchronously; never fall back to "latest activity"
+        expected = start_time.strftime("%Y-%m-%d %H:%M:%S")
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            time.sleep(3)
+            for activity in self.client.get_activities(0, 5):
+                if activity.get("startTimeGMT") == expected:
+                    return activity.get("activityId")
+        return None
 
     def delete_activity(self, activity_id: str):
         """Deletes an old/raw activity from Garmin Connect by its ID."""
         print(f"Deleting old raw activity (ID: {activity_id}) from Garmin Connect...")
         try:
             self.client.delete_activity(activity_id)
-            print(f"✅ Activity ID {activity_id} successfully deleted from Garmin Connect!")
+            print(
+                f"✅ Activity ID {activity_id} successfully deleted from Garmin Connect!"
+            )
         except Exception as e:
-            raise Exception(f"Failed to delete activity {activity_id}: {e}")
+            raise Exception(f"Failed to delete activity {activity_id}: {e}") from e

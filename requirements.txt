@@ -1,5 +1,5 @@
-fitdecode
-fit_tool
-requests
-dotenv
-garminconnect
+fitdecode==0.11.0
+fit-tool==0.9.16
+requests==2.34.2
+python-dotenv==1.2.4
+garminconnect==0.3.17
