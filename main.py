@@ -105,8 +105,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "-o",
         "--output",
-        default=f"manual_fixed.fit",
-        help=f"Output path for merged FIT file (default: manual_fixed.fit)",
+        default="manual_fixed.fit",
+        help="Output path for merged FIT file (default: manual_fixed.fit)",
     )
 
     args = parser.parse_args()
