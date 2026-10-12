@@ -1,6 +1,6 @@
 import os
 from bisect import bisect_right
-from datetime import datetime
+from datetime import datetime, timezone
 
 import fitdecode
 from fit_tool.definition_message import DefinitionMessage
@@ -12,7 +12,7 @@ from fit_tool.profile.messages.session_message import SessionMessage
 from fit_tool.profile.messages.sport_message import SportMessage
 from fit_tool.profile.profile_type import Sport, SubSport
 
-SEMICIRCLES_TO_DEG = 180.0 / 2**31
+from lib.align import SEMICIRCLES_TO_DEG, Aligner, ride_window
 
 # Fields written into Garmin messages. Missing ones (e.g. GPS/altitude, which the watch
 # does not record indoors) are added to the message definitions before writing.
@@ -81,18 +81,10 @@ class ActivityMerger:
         self.output_path = output_path
         self.start_time = None  # Garmin activity start (UTC), set by process()
 
-        # Load max allowed start time difference from environment (default: 10.0 s)
-        self.max_time_diff = float(os.getenv("MAX_TIME_DIFF_SEC", "10"))
-
-    def _get_start_time(self, file_path):
-        """Extracts the start_time from the session message of a FIT file."""
-        with fitdecode.FitReader(file_path) as fit:
-            for frame in fit:
-                if frame.frame_type == fitdecode.FIT_FRAME_DATA and frame.name == 'session':
-                    for f in frame.fields:
-                        if f.name == 'start_time' and f.value:
-                            return f.value
-        return None
+        # Start/end differences up to this many seconds are left as recorded by the watch
+        self.max_time_diff = int(float(os.getenv("MAX_TIME_DIFF_SEC", "10")))
+        # Minimum share of the Zwift ride the watch recording must cover
+        self.min_overlap_pct = float(os.getenv("MIN_OVERLAP_PCT", "80"))
 
     def _read_zwift(self):
         """Reads Zwift session totals and per-second record samples."""
@@ -125,6 +117,9 @@ class ActivityMerger:
                         'altitude': altitude,
                         'lat': v.get('position_lat'),
                         'long': v.get('position_long'),
+                        'power': v.get('power'),
+                        'heart_rate': v.get('heart_rate'),
+                        'cadence': v.get('cadence'),
                     })
         return session, ZwiftTrack(samples)
 
@@ -136,31 +131,33 @@ class ActivityMerger:
         print(f"\n-> Garmin file: {self.garmin_path}")
         print(f"-> Zwift file:  {self.zwift_path}")
 
-        print("\n0. Validating activity start times...")
-        garmin_start = self._get_start_time(self.garmin_path)
-        zwift_start = self._get_start_time(self.zwift_path)
-
-        # Data is matched by timestamp, so refuse to merge files we cannot align
-        if not (isinstance(garmin_start, datetime) and isinstance(zwift_start, datetime)):
-            raise ValueError("Validation Error: Could not extract start times from both FIT files.")
-
-        time_diff = abs((garmin_start - zwift_start).total_seconds())
-        print(f"    Time difference: {time_diff:.1f} seconds (Max allowed: {self.max_time_diff:.1f}s)")
-        if time_diff > self.max_time_diff:
-            raise ValueError(
-                f"Validation Error: Garmin and Zwift files do not match! "
-                f"Time difference is {time_diff:.1f}s (max allowed is {self.max_time_diff:.1f}s)."
-            )
-        print("    ✅ Time validation passed successfully!")
-        self.start_time = garmin_start
-
-        print("\n1. Reading Zwift session and per-second data...")
+        print("\n0. Reading Zwift session and per-second data...")
         zwift_session, track = self._read_zwift()
         zwift_distance = zwift_session.get('total_distance') or track.samples[-1]['distance']
         print(f"    ✅ Zwift: {zwift_distance / 1000.0:.2f} km, {len(track.samples)} samples")
 
-        print("\n2. Merging Zwift data into Garmin records...")
+        print("\n1. Validating that both files record the same ride...")
         garmin_fit = FitFile.from_file(self.garmin_path)
+        g_start, g_end = ride_window(garmin_fit)
+        overlap = max(min(g_end, track.end) - max(g_start, track.start), 0)
+        overlap_pct = 100.0 * overlap / max(track.end - track.start, 1)
+        print(
+            f"    Watch covers {overlap_pct:.1f}% of the Zwift ride "
+            f"(start {g_start - track.start:+d} s, end {g_end - track.end:+d} s; min required: {self.min_overlap_pct:.0f}%)"
+        )
+        if overlap_pct < self.min_overlap_pct:
+            raise ValueError(
+                f"Validation Error: Garmin and Zwift files do not match! "
+                f"Watch covers only {overlap_pct:.1f}% of the Zwift ride (min {self.min_overlap_pct:.0f}%)."
+            )
+        print("    ✅ Validation passed successfully!")
+
+        aligner = Aligner(garmin_fit, track, self.max_time_diff)
+        print(f"\n2. Aligning watch recording to the Zwift ride: {aligner.describe()}")
+        aligner.run()
+        self.start_time = datetime.fromtimestamp(aligner.new_start, tz=timezone.utc)
+
+        print("\n3. Merging Zwift data into Garmin records...")
 
         # Every message we write must carry the fields in its definition (both the
         # definition record and the data message's own copy of it).
@@ -232,12 +229,12 @@ class ActivityMerger:
 
         print(f"    ✅ Updated {records} records and {laps} laps")
 
-        print(f"\n3. Saving merged file to '{self.output_path}'...")
+        print(f"\n4. Saving merged file to '{self.output_path}'...")
         # Full re-encode: definitions changed, so original bytes cannot be reused
         garmin_fit.to_file(self.output_path, preserve=False)
         print("    ✅ Merged FIT file created successfully!")
 
-        print("\n4. Verifying output file...")
+        print("\n5. Verifying output file...")
         self._verify(zwift_distance, records)
         print("\n✅ Done! The file is verified and ready to be uploaded to Garmin Connect.")
 
