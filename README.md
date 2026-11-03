@@ -229,6 +229,7 @@ If this tool saves you time, you can buy me a coffee. Thank you, it keeps the pr
 ```
 main.py                 CLI: automatic and manual mode
 zwift-garmin-sync.spec  PyInstaller build of the standalone program
+scripts/release.py      Releases a new version (see "Releasing a new version")
 lib/
 ├── app.py              Where .env and fit/ live, first-run setup, console handling
 ├── garmin/client.py    Garmin Connect API: login, download, delete, upload, rename
@@ -324,8 +325,15 @@ cmp /tmp/before.fit /tmp/after.fit
 
 ### Releasing a new version
 
-1. Set the new version in `lib/__init__.py` (for example `__version__ = "1.1.0"`) and commit.
-2. Tag and push: `git tag v1.1.0 && git push origin main v1.1.0`.
+```bash
+python scripts/release.py patch     # 1.0.0 -> 1.0.1 (fixes)
+python scripts/release.py minor     # 1.0.0 -> 1.1.0 (new features)
+python scripts/release.py 2.0.0     # explicit version
+```
+
+The script checks that you're on an up-to-date `main` with nothing uncommitted, runs the tests (`--quick` for the 2 newest rides only), sets the version in `lib/__init__.py`, commits, tags, asks before pushing, and then waits for the GitHub build and prints the release link or what failed.
+
+By hand, the same is: set `__version__` in `lib/__init__.py`, commit, then `git tag -a v1.1.0 -m "zwift-garmin-sync 1.1.0" && git push origin main v1.1.0`.
 
 GitHub Actions (`.github/workflows/release.yml`) then runs the tests, checks that the tag matches the version, builds the program on Windows, macOS (Apple Silicon and Intel) and Linux, checks that each one starts, and attaches the zip files to the release. A test build without a release can be started by hand from the **Actions** tab.
 
