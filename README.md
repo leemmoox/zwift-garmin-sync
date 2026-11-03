@@ -1,4 +1,4 @@
-# Zwift → Garmin FIT merger
+# zwift-garmin-sync
 
 Makes a Zwift ride count in Garmin Connect as if it had been recorded by your Garmin device.
 
@@ -27,14 +27,40 @@ It also corrects for starting or stopping the watch at the wrong time. Watch dat
 **From Zwift:**
 - distance, speed, elevation and GPS position, matched second by second
 - session totals: distance, ascent, average and max speed
+- start/end position and the route's bounding box, which Garmin Connect uses to place the activity on the map
+
+**Laps:** from your Zwift workout, or your watch's auto-lap setting. See [Laps](#laps).
 
 **Calculated by the tool:**
-- per-lap distance, ascent, descent, average and max speed
-- after cutting or extending the recording: power, normalized power, work, HR, cadence, time in zones, calories and TSS/IF
+- per-lap distance, ascent, descent, average/max speed and start/end position
+- for rebuilt laps: power, normalized power, work, HR, cadence, cycles, calories and time in zones
+- after cutting or extending the recording: the same values plus TSS/IF for the session
 
 The activity type is set to **Virtual Cycling** (`cycling / virtual_activity`), and the activity name gets a ✨ suffix that marks it as already merged.
 
 ---
+
+## Laps
+
+Indoors the watch has no GPS, so it only *estimates* distance (from power or speed). Watch auto-laps based on that estimate end at random points of the real ride: a "5 km" lap can turn out to be 2 km or 7.7 km of Zwift distance. The tool therefore rebuilds the laps:
+
+| Your ride | Laps in the merged activity |
+|---|---|
+| **Zwift workout** (Zwift recorded more than one lap) | One lap per workout interval, with the same start times as in Zwift. This applies whatever the watch's auto-lap setting is. |
+| **Free ride, watch auto-lap on** (for example every 5 km) | Laps re-split every 5 km of the **real Zwift distance**. The lap length is taken from the watch's own laps, so changing the auto-lap distance on the watch needs no change here. |
+| **Free ride, watch auto-lap off** | No extra laps: one lap for the whole ride. |
+| **Laps set with the lap button** | Kept as they are. |
+
+**Recommended watch setting:** turn auto-lap **off** for your indoor cycling profile if you don't want laps on free rides. Workouts still get their intervals from Zwift. Turn it on when you do want distance laps; they'll be re-split correctly.
+
+For every rebuilt lap, the following are recalculated from the per-second data:
+- time, distance, ascent/descent, average/max speed, start/end position
+- average/max power, normalized power, work
+- average/max HR and cadence, cycles
+- calories, as the lap's share of the session's work
+- time in HR and power zones
+
+Garmin-only lap values that can't be recalculated from the per-second data are copied from the watch lap that overlaps the new lap the most. Session totals (including Training Effect and training load) are never affected by how the laps are split.
 
 ## Requirements
 
@@ -45,8 +71,8 @@ The activity type is set to **Virtual Cycling** (`cycling / virtual_activity`), 
 ## Installation
 
 ```bash
-git clone <repo-url> zg
-cd zg
+git clone https://github.com/leemmoox/zwift-garmin-sync.git
+cd zwift-garmin-sync
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -123,8 +149,10 @@ python main.py -g path/to/garmin.fit -z path/to/zwift.fit -i <garmin-activity-id
     ✅ Validation passed successfully!
 
 2. Aligning watch recording to the Zwift ride: cut 284 s at the end
+
+3. Laps: 27 laps from the Zwift workout
 ...
-5. Verifying output file...
+6. Verifying output file...
     ✅ Verified Distance: 25.28 km
 ```
 
@@ -135,6 +163,7 @@ python main.py -g path/to/garmin.fit -z path/to/zwift.fit -i <garmin-activity-id
 - **The original activity is deleted before the upload.** Garmin rejects a re-upload of the same recording while the original exists, so it can't be the other way round. The merged file is fully built and verified before anything is deleted, and the original FIT file stays in `fit/`. If the upload fails, upload that file manually in Garmin Connect (Import Data).
 - **Training Effect and training load** are calculated by the watch while you ride and are kept as they are. Garmin Connect doesn't recalculate them from an uploaded file, so seconds filled in from Zwift aren't included, and seconds that were cut off still are.
 - **FTP auto-detection** happens on the device during the ride. Re-uploading a file doesn't trigger it.
+- **Rebuilt laps** copy the Garmin-only lap fields that can't be recalculated from the per-second data (for example Garmin's proprietary lap values) from the watch lap they overlap most.
 - **Map location:** Zwift worlds are placed at real coordinates (for example, Watopia is near the Solomon Islands), so that's where the map shows your ride.
 - **Unofficial APIs:** both the Zwift API and the `garminconnect` library are unofficial and can break when Zwift or Garmin change something. Dependencies are pinned in `requirements.txt` for that reason.
 - **Calories** for cut or filled-in time are scaled by the work done. Garmin's own calorie formula isn't public.
@@ -163,9 +192,12 @@ lib/
     ├── merger.py       ActivityMerger: the pipeline below
     ├── zwift_track.py  Reads the Zwift FIT file into per-second samples (ZwiftTrack)
     ├── align.py        Cuts/extends the watch recording to the Zwift ride window
+    ├── laps.py         Rebuilds laps: Zwift workout intervals, or auto-laps on Zwift distance
     ├── enrich.py       Writes Zwift data into watch records and lap/session totals
+    ├── stats.py        Recalculates lap/session summaries the way the watch does
     ├── verify.py       Checks the output file before anything is deleted
     └── utils.py        Shared fit_tool helpers
+tests/                  pytest suite (see "Tests" below)
 ```
 
 `lib/garmin` and `lib/zwift` only talk to web services, and `lib/fit` only works on files. That means you can test any merge offline with cached files from `fit/`.
@@ -173,20 +205,22 @@ lib/
 ### The pipeline (`ActivityMerger.process`)
 
 ```
-read Zwift FIT ──► check overlap ──► align ──► enrich ──► save ──► verify
- zwift_track.py      merger.py      align.py  enrich.py           verify.py
+read Zwift FIT ──► check overlap ──► align ──► laps ──► enrich ──► save ──► verify
+ zwift_track.py      merger.py      align.py  laps.py  enrich.py           verify.py
 ```
 
-1. **Read Zwift** (`read_zwift_fit`): reads the session totals plus one sample per second: distance, speed, altitude, position, power, HR and cadence.
+1. **Read Zwift** (`read_zwift_fit` → `ZwiftRide`): reads the session totals, the lap start times, and one sample per second: distance, speed, altitude, position, power, HR and cadence.
 2. **Check overlap**: the watch recording must cover `MIN_OVERLAP_PCT` of the Zwift ride.
 3. **Align** (`Aligner`): if the start or end differs by more than `MAX_TIME_DIFF_SEC`:
    - drops watch records (and their companion messages) outside the Zwift window, and laps that fall completely outside it
    - inserts new records built from Zwift data for seconds the watch missed
    - moves the first lap/session start and last lap/session end, and renumbers laps
+   - rebuilds the accumulated-power counter so it starts at 0, keeping the power meter's own increments
    - recalculates power, NP, work, HR, cadence, calories, TSS/IF and time in zones for the session and the affected laps
-4. **Enrich** (`apply_zwift_data`): for every record, sets distance, speed, altitude and position from the Zwift sample at that timestamp. For every lap, sets distance, ascent, descent and average/max speed for the lap's time window. The session gets Zwift's totals. Sport/sub-sport become `cycling/virtual_activity`.
-5. **Save**: does a full re-encode (`to_file(preserve=False)`).
-6. **Verify**: re-reads the output with `fitdecode` and checks the record count and session distance.
+4. **Laps** (`LapRebuilder`): if Zwift has more than one lap, each Zwift lap becomes a lap. Otherwise, if all watch laps are distance auto-laps, they're re-split every N km of Zwift distance, where N is the watch's auto-lap distance. Each new lap is a copy of the watch lap it overlaps most, with times, stats, calories (its share of the session's work) and time in zones recalculated. Manual laps are left alone.
+5. **Enrich** (`apply_zwift_data`): for every record, sets distance, speed, altitude and position from the Zwift sample at that timestamp. For every lap, sets distance, ascent, descent, average/max speed and start/end position for the lap's time window. The session gets Zwift's totals and the route's bounding box. Sport/sub-sport become `cycling/virtual_activity`.
+6. **Save**: does a full re-encode (`to_file(preserve=False)`).
+7. **Verify**: re-reads the output with `fitdecode` and checks the record count and session distance.
 
 ### FIT file notes (useful when changing `lib/fit`)
 
@@ -202,31 +236,46 @@ Things that weren't obvious:
   - Session, lap, activity and time-in-zone messages come *before* the records, and their `timestamp` equals the activity start, not the end. The end of a lap/session is `start_time + total_elapsed_time`.
   - Every record is followed by an undocumented message `233` with no timestamp. It's dropped or kept together with its record.
   - Message `104` is a periodic sample with its own timestamp (field `253`, FIT epoch).
+  - Lap start times are whole seconds but durations are to the millisecond, so `start + duration` doesn't land exactly on the next lap's start. What the watch keeps exact is that lap durations add up to the session duration, so `align.py` works from the session start plus the previous lap durations.
+- **Inserting messages:** new messages need their definition in front of them, and whatever definition was active for that local message number must be restored afterwards. `utils.insert_messages` does both.
 - **Invalid values:** fit_tool returns the raw "invalid" marker (for example `255` for missing HR). Always read sensor values with `utils.valid_value`.
 - **Zwift quirk:** Zwift records repeat field names (for example two `distance` fields, one of them empty). Keep the first non-empty value.
 - **Units:** fit_tool timestamps are in milliseconds; FIT data is per second (`utils.secs`). Positions are written in degrees but read by fitdecode as semicircles (`SEMICIRCLES_TO_DEG`).
-- **How the watch rounds:**
-  - average power is truncated and includes zeros
-  - average cadence is truncated and excludes zeros
-  - average HR and NP are rounded
-  - NP is the 4th-power mean of the 30 s rolling average
-  - an HR or power value exactly on a zone boundary counts in the zone above it (`value < boundary`)
+- **How the watch calculates summaries** (checked against 144 sessions and laps by `tests/test_watch_calibration.py`):
+  - work comes from the power meter's accumulated-power counter, which is sampled faster than once a second. It's more accurate than adding up per-second power, which can be off by up to 5%.
+  - average power is work ÷ number of records, rounded
+  - NP is the 4th-power mean of the 30 s rolling average, and the rolling average runs across the whole activity: it does not restart at a lap
+  - average cadence is truncated and excludes zeros; average HR is rounded
+  - time in zones is time: a record followed by a recording gap counts for the whole gap, and a value exactly on a zone boundary counts in the zone above it (`value < boundary`)
 
-  With these rules the recalculated values match what the watch writes.
+  When a lap's per-second power adds up to clearly less than the watch's own work (sensor dropouts), the watch's NP can't be reproduced from the file. That happens on a few laps; the difference is a few watts.
 
-### Testing a change
-
-There's no automated test suite yet. Because the merger is fully offline, the most useful check is to compare output before and after your change on real rides:
+### Tests
 
 ```bash
-# before the change
-python -c "from lib.fit import ActivityMerger; ActivityMerger('fit/gX.fit', 'fit/zX.fit', '/tmp/before.fit').process()"
-# after the change
-python -c "from lib.fit import ActivityMerger; ActivityMerger('fit/gX.fit', 'fit/zX.fit', '/tmp/after.fit').process()"
-cmp /tmp/before.fit /tmp/after.fit   # refactors should produce identical bytes
+pip install -r requirements-dev.txt
+pytest                              # all rides, about 3 minutes
+ZG_TEST_MAX_RIDES=2 pytest          # only the 2 newest rides, about 40 seconds
+pytest tests/test_zwift_track.py    # unit tests only, no ride files needed
 ```
 
-To test alignment, cut a real recording with `Aligner` against a shortened `ZwiftTrack` (simulating a watch started late or stopped early), merge it with the full Zwift file, and compare the session values with the original watch file. They should match within about 1%.
+Most tests use **your own rides**: the watch and Zwift files the app keeps in `fit/`. Ride files contain personal data (weight, HR, device serials), so they're never committed. Use another folder with `ZG_TEST_FIT_DIR=/path/to/rides`. Files are paired by the start time in their names (`gYYYYMMDD-HHMM.fit` / `zYYYYMMDD-HHMM.fit`). Watch files that were already merged (marked `virtual_activity`) are skipped, because they aren't real watch recordings.
+
+| File | Checks |
+|---|---|
+| `test_merge.py` | For every ride: device identity and other messages kept, watch power/HR/cadence unchanged, distance/GPS on every record, session = Zwift distance, bounding box contains the route, laps follow each other and add up to the session, each lap has time in zones, workout intervals = Zwift laps, free-ride laps = auto-lap distance |
+| `test_watch_calibration.py` | `stats.py` reproduces the watch's own session and lap values from its records |
+| `test_align.py` | A recording cut at both ends and refilled from Zwift matches the full recording; cut files stay consistent; an unrelated activity is refused; unmodified files re-encode byte-identically |
+| `test_zwift_track.py` | `ZwiftTrack` lookups on synthetic data |
+
+For a pure refactor, also compare output files before and after the change. They should be byte-identical:
+
+```bash
+python -c "from lib.fit import ActivityMerger; ActivityMerger('fit/gX.fit', 'fit/zX.fit', '/tmp/before.fit').process()"
+# ... make the change ...
+python -c "from lib.fit import ActivityMerger; ActivityMerger('fit/gX.fit', 'fit/zX.fit', '/tmp/after.fit').process()"
+cmp /tmp/before.fit /tmp/after.fit
+```
 
 To inspect any FIT file:
 
@@ -237,3 +286,9 @@ with fitdecode.FitReader("fit/gX.fit") as fit:
         if frame.frame_type == fitdecode.FIT_FRAME_DATA and frame.name == "session":
             print({f.name: f.value for f in frame.fields if f.value is not None})
 ```
+
+---
+
+## License
+
+[MIT](LICENSE). Not affiliated with or endorsed by Zwift or Garmin.
