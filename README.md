@@ -289,6 +289,20 @@ with fitdecode.FitReader("fit/gX.fit") as fit:
 
 ---
 
+## ☕ Support the Project (Donate)
+
+If you like this project, if it helped you, or if it saved you time, you can support me:
+
+* **PayPal:** [paypal.me/emko80](https://paypal.me/emko80/5eur)
+* **Revolut:** [revolut.me/emilqzq8u](https://revolut.me/emilqzq8u?amount=500&currency=EUR)
+
+[![PayPal](https://img.shields.io/badge/PayPal-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://paypal.me/emko80/5eur)
+[![Revolut](https://img.shields.io/badge/Revolut-000000?style=for-the-badge&logo=revolut&logoColor=white)](https://revolut.me/emilqzq8u?amount=500&currency=EUR)
+
+Any support is greatly appreciated and motivates me to continue development. Thank you! ❤️
+
+---
+
 ## License
 
 [MIT](LICENSE). Not affiliated with or endorsed by Zwift or Garmin.
