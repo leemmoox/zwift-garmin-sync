@@ -1,6 +1,7 @@
 """Reads a Zwift FIT file into per-second samples."""
 
 from bisect import bisect_right
+from dataclasses import dataclass
 
 import fitdecode
 
@@ -44,16 +45,32 @@ class ZwiftTrack:
         return max((s["speed"] for s in self.window(t_start, t_end)), default=0.0)
 
 
+@dataclass
+class ZwiftRide:
+    session: dict  # Zwift session message fields
+    track: ZwiftTrack
+    lap_starts: list  # lap start times (seconds); workout intervals when riding a Zwift workout
+
+    @property
+    def distance(self):
+        return self.session.get('total_distance') or self.track.samples[-1]['distance']
+
+
 def read_zwift_fit(path):
-    """Returns (session field dict, ZwiftTrack) for a Zwift FIT file."""
+    """Reads a Zwift FIT file into a ZwiftRide."""
     session = {}
     samples = []
+    lap_starts = []
     with fitdecode.FitReader(path) as fit:
         for frame in fit:
             if frame.frame_type != fitdecode.FIT_FRAME_DATA:
                 continue
             if frame.name == 'session' and not session:
                 session = {f.name: f.value for f in frame.fields}
+            elif frame.name == 'lap':
+                start = next((f.value for f in frame.fields if f.name == 'start_time' and f.value), None)
+                if start is not None:
+                    lap_starts.append(int(start.timestamp()))
             elif frame.name == 'record':
                 # Zwift repeats some field names (e.g. 'distance') with empty values; keep the real one
                 v = {}
@@ -79,4 +96,4 @@ def read_zwift_fit(path):
                     'heart_rate': v.get('heart_rate'),
                     'cadence': v.get('cadence'),
                 })
-    return session, ZwiftTrack(samples)
+    return ZwiftRide(session, ZwiftTrack(samples), sorted(lap_starts))

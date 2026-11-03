@@ -5,13 +5,15 @@ from fit_tool.fit_file import FitFile
 
 from lib.fit.align import Aligner, ride_window
 from lib.fit.enrich import apply_zwift_data
+from lib.fit.laps import LapRebuilder
 from lib.fit.verify import verify_output
 from lib.fit.zwift_track import read_zwift_fit
 
 
 class ActivityMerger:
     """Pipeline: read Zwift data -> check both files are the same ride -> align the watch
-    recording to the Zwift ride -> write Zwift data into the watch file -> save -> verify."""
+    recording to the Zwift ride -> rebuild laps -> write Zwift data into the watch file
+    -> save -> verify."""
 
     def __init__(self, garmin_path, zwift_path, output_path="garmin_fixed.fit"):
         self.garmin_path = garmin_path
@@ -33,31 +35,37 @@ class ActivityMerger:
         print(f"-> Zwift file:  {self.zwift_path}")
 
         print("\n0. Reading Zwift session and per-second data...")
-        zwift_session, track = read_zwift_fit(self.zwift_path)
-        zwift_distance = zwift_session.get('total_distance') or track.samples[-1]['distance']
-        print(f"    ✅ Zwift: {zwift_distance / 1000.0:.2f} km, {len(track.samples)} samples")
+        ride = read_zwift_fit(self.zwift_path)
+        print(
+            f"    ✅ Zwift: {ride.distance / 1000.0:.2f} km, {len(ride.track.samples)} samples, "
+            f"{len(ride.lap_starts)} laps"
+        )
 
         print("\n1. Validating that both files record the same ride...")
         garmin_fit = FitFile.from_file(self.garmin_path)
-        self._validate_overlap(garmin_fit, track)
+        self._validate_overlap(garmin_fit, ride.track)
         print("    ✅ Validation passed successfully!")
 
-        aligner = Aligner(garmin_fit, track, self.max_time_diff)
+        aligner = Aligner(garmin_fit, ride.track, self.max_time_diff)
         print(f"\n2. Aligning watch recording to the Zwift ride: {aligner.describe()}")
         aligner.run()
         self.start_time = datetime.fromtimestamp(aligner.new_start, tz=timezone.utc)
 
-        print("\n3. Merging Zwift data into Garmin records...")
-        records, laps = apply_zwift_data(garmin_fit, track, zwift_session)
+        rebuilder = LapRebuilder(garmin_fit, ride)
+        print(f"\n3. Laps: {rebuilder.describe()}")
+        rebuilder.run()
+
+        print("\n4. Merging Zwift data into Garmin records...")
+        records, laps = apply_zwift_data(garmin_fit, ride)
         print(f"    ✅ Updated {records} records and {laps} laps")
 
-        print(f"\n4. Saving merged file to '{self.output_path}'...")
+        print(f"\n5. Saving merged file to '{self.output_path}'...")
         # Full re-encode: definitions changed, so original bytes cannot be reused
         garmin_fit.to_file(self.output_path, preserve=False)
         print("    ✅ Merged FIT file created successfully!")
 
-        print("\n5. Verifying output file...")
-        verify_output(self.output_path, zwift_distance, records)
+        print("\n6. Verifying output file...")
+        verify_output(self.output_path, ride.distance, records)
         print("\n✅ Done! The file is verified and ready to be uploaded to Garmin Connect.")
 
     def _validate_overlap(self, garmin_fit, track):

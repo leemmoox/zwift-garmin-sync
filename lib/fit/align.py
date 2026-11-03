@@ -5,8 +5,6 @@ records outside the Zwift ride are removed, missing seconds are filled from Zwif
 and the affected lap/session summaries are recalculated from the resulting records.
 """
 
-import math
-
 from fit_tool.data_message import DataMessage
 from fit_tool.definition_message import DefinitionMessage
 from fit_tool.profile.messages.activity_message import ActivityMessage
@@ -15,12 +13,13 @@ from fit_tool.profile.messages.lap_message import LapMessage
 from fit_tool.profile.messages.record_message import RecordMessage
 from fit_tool.profile.messages.session_message import SessionMessage
 from fit_tool.profile.messages.time_in_zone_message import TimeInZoneMessage
-from fit_tool.record import Record, RecordHeader
 
+from lib.fit.stats import recompute_stats, recompute_zones, summary_window, window_between
 from lib.fit.utils import (
     FIT_EPOCH_OFFSET,
     SEMICIRCLES_TO_DEG,
     add_field_definitions,
+    insert_messages,
     secs,
     set_field,
     set_if_defined,
@@ -36,10 +35,6 @@ FILLED_RECORD_FIELDS = [
     "timestamp", "distance", "enhanced_speed", "enhanced_altitude", "position_lat",
     "position_long", "power", "heart_rate", "cadence", "accumulated_power",
 ]
-
-
-def _record_header(local_id, is_definition):
-    return RecordHeader(is_definition=is_definition, local_id=local_id)
 
 
 def ride_window(garmin_fit):
@@ -65,6 +60,9 @@ class Aligner:
         self.new_end = track.end if abs(self.g_end - track.end) > tolerance_sec else self.g_end
         self.delta_start = self.g_start - self.new_start  # > 0: seconds added at start, < 0: trimmed
         self.delta_end = self.new_end - self.g_end  # > 0: seconds added at end, < 0: trimmed
+        self.filled = set()  # ids of records built from Zwift data
+
+        self.edges = self._summary_edges()
 
     @property
     def changed(self):
@@ -103,8 +101,7 @@ class Aligner:
                 if dropping:
                     continue
             elif isinstance(msg, LapMessage):
-                lap_start = secs(msg.start_time)
-                lap_end = lap_start + (msg.total_elapsed_time or 0)
+                lap_start, lap_end = self.edges[id(msg)]
                 if lap_start >= self.new_end or lap_end <= self.new_start:
                     self.removed_lap_indexes.add(msg.message_index)
                     continue
@@ -151,20 +148,13 @@ class Aligner:
         self._recompute_accumulated_power()
 
     def _insert_block(self, pos, local_id, samples):
-        """Inserts Zwift-based records at pos, using local_id and restoring its previous definition afterwards."""
+        """Inserts records built from Zwift samples at pos."""
         if not samples:
             return
-        records = self.fit.records
-
-        previous_def = None
-        for r in records[:pos]:
-            if isinstance(r.message, DefinitionMessage) and r.header.local_id == local_id:
-                previous_def = r.message
-
         definition = DefinitionMessage(global_id=RecordMessage.ID, local_id=local_id)
         add_field_definitions(definition, RecordMessage, FILLED_RECORD_FIELDS)
 
-        block = [Record(_record_header(local_id, True), definition, dirty=True)]
+        messages = []
         for s in samples:
             msg = RecordMessage(local_id=local_id)
             msg.set_definition_message(definition)
@@ -179,20 +169,30 @@ class Aligner:
             for name in ("power", "heart_rate", "cadence"):
                 if s[name] is not None:
                     set_field(msg, name, s[name])
-            block.append(Record(_record_header(local_id, False), msg, dirty=True))
+            messages.append((local_id, msg))
+            self.filled.add(id(msg))
 
-        if previous_def is not None:
-            block.append(Record(_record_header(local_id, True), previous_def, dirty=True))
-
-        records[pos:pos] = block
+        insert_messages(self.fit.records, pos, messages)
 
     def _recompute_accumulated_power(self):
+        """Rebuilds the accumulated-power counter so it starts at 0 at the new start.
+
+        Increments between watch records come from the power meter's own counter (more
+        precise than 1 s power); seconds filled from Zwift add their per-second power.
+        """
         total = 0
+        previous = None  # watch counter of the previous record, if that was a watch record
         for r in self.fit.records:
             msg = r.message
             if not isinstance(msg, RecordMessage):
                 continue
-            total += valid_value(msg, "power") or 0
+            counter = valid_value(msg, "accumulated_power")
+            from_watch = id(msg) not in self.filled
+            if from_watch and counter is not None and previous is not None:
+                total += counter - previous
+            else:
+                total += valid_value(msg, "power") or 0
+            previous = counter if from_watch else None
             set_if_defined(msg, "accumulated_power", total)
 
     # --- laps & summaries ---
@@ -212,15 +212,6 @@ class Aligner:
             elif isinstance(msg, SessionMessage):
                 set_if_defined(msg, "num_laps", len(laps))
                 set_if_defined(msg, "first_lap_index", 0)
-
-    def _samples(self, t_start, t_end):
-        """(power, heart_rate, cadence) of final records in [t_start, t_end)."""
-        out = []
-        for r in self.fit.records:
-            msg = r.message
-            if isinstance(msg, RecordMessage) and t_start <= secs(msg.timestamp) < t_end:
-                out.append((valid_value(msg, "power"), valid_value(msg, "heart_rate"), valid_value(msg, "cadence")))
-        return out
 
     def _update_summaries(self):
         old_start_ms = self.g_start * 1000
@@ -262,9 +253,11 @@ class Aligner:
         for msg in [session] + laps:
             if msg is None or (isinstance(msg, LapMessage) and msg.message_index not in changed_laps):
                 continue
-            t_start = secs(msg.start_time)
-            t_end = t_start + math.ceil(msg.total_elapsed_time or 0)
-            self._recompute_stats(msg, self._samples(t_start, t_end), threshold)
+            old_work, old_calories = msg.total_work, msg.total_calories
+            recompute_stats(msg, window_between(self.fit, *summary_window(msg)), threshold)
+            # Calories scale with the work done (watch's own estimate for the recorded part)
+            if old_work and old_calories is not None and msg.total_work is not None:
+                set_if_defined(msg, "total_calories", round(old_calories * msg.total_work / old_work))
 
         for r in self.fit.records:
             msg = r.message
@@ -276,76 +269,44 @@ class Aligner:
                 target = laps[msg.reference_index]
             else:
                 continue
-            t_start = secs(target.start_time)
-            t_end = t_start + math.ceil(target.total_elapsed_time or 0)
-            self._recompute_zones(msg, self._samples(t_start, t_end))
+            recompute_zones(msg, window_between(self.fit, *summary_window(target)))
+
+    def _summary_edges(self):
+        """Exact (start, end) times of the session and each lap, by id of the message.
+
+        The watch stores start times in whole seconds but durations to the millisecond, and
+        keeps the lap durations adding up to the session duration. So the exact start of a
+        lap is the session start plus all previous lap durations.
+        """
+        edges = {}
+        session = next((r.message for r in self.fit.records if isinstance(r.message, SessionMessage)), None)
+        if session is None:
+            return edges
+        start = session.start_time / 1000
+        edges[id(session)] = (start, start + (session.total_elapsed_time or 0))
+        laps = sorted((r.message for r in self.fit.records if isinstance(r.message, LapMessage)),
+                      key=lambda m: m.message_index)
+        for lap in laps:
+            end = start + (lap.total_elapsed_time or 0)
+            edges[id(lap)] = (start, end)
+            start = end
+        # The session ends this much after its last record; the new end keeps the same offset
+        self.end_offset = edges[id(session)][1] - self.g_end
+        return edges
 
     def _fit_to_window(self, msg, is_first, is_last):
         """Moves the start of the first lap/session to new_start and the end of the last one to new_end."""
-        start = secs(msg.start_time)
-        end = start + int(msg.total_elapsed_time or 0)
-        # Seconds gained (+) or lost (-) at each edge, measured against the recorded data
-        delta = 0
-        if is_first:
-            delta += max(start, self.g_start) - self.new_start
+        start, end = self.edges[id(msg)]
+        new_start, new_end = start, end
+        if is_first and self.delta_start:
+            new_start = self.new_start
             msg.start_time = self.new_start * 1000
-        if is_last:
-            delta += self.new_end - min(end, self.g_end)
+        if is_last and self.delta_end:
+            new_end = self.new_end + self.end_offset
+        delta = (new_end - new_start) - (end - start)
         if not delta:
             return
         for name in ("total_elapsed_time", "total_timer_time"):
             value = getattr(msg, name)
             if value is not None:
                 setattr(msg, name, max(value + delta, 0))
-
-    @staticmethod
-    def _recompute_stats(msg, samples, threshold_power):
-        """Recalculates power/HR/cadence summaries the same way the watch does."""
-        if not samples:
-            return
-        power = [p or 0 for p, _, _ in samples]
-        hr = [h for _, h, _ in samples if h]
-        cadence = [c for _, _, c in samples if c]
-
-        old_work = msg.total_work
-        work = sum(power)
-        rolling = [sum(power[max(0, i - 29):i + 1]) / min(i + 1, 30) for i in range(len(power))]
-        rolling = rolling[29:] or rolling
-        normalized = (sum(x**4 for x in rolling) / len(rolling)) ** 0.25
-
-        set_if_defined(msg, "avg_power", int(work / len(power)))
-        set_if_defined(msg, "max_power", max(power))
-        set_if_defined(msg, "normalized_power", round(normalized))
-        set_if_defined(msg, "total_work", work)
-        if hr:
-            set_if_defined(msg, "avg_heart_rate", round(sum(hr) / len(hr)))
-            set_if_defined(msg, "max_heart_rate", max(hr))
-        if cadence:
-            set_if_defined(msg, "avg_cadence", int(sum(cadence) / len(cadence)))
-            set_if_defined(msg, "max_cadence", max(cadence))
-
-        # Calories scale with the work done (watch's own estimate for the recorded part)
-        if old_work and msg.total_calories is not None:
-            set_if_defined(msg, "total_calories", round(msg.total_calories * work / old_work))
-
-        if threshold_power and isinstance(msg, SessionMessage):
-            intensity = round(normalized) / threshold_power
-            duration = msg.total_timer_time or len(power)
-            set_if_defined(msg, "intensity_factor", intensity)
-            set_if_defined(msg, "training_stress_score", duration * intensity**2 / 3600 * 100)
-
-    @staticmethod
-    def _recompute_zones(msg, samples):
-        def fill(field_name, boundaries, values):
-            field = msg.get_field_by_name(field_name)
-            if not field or not boundaries or field.length == 0:
-                return
-            counts = [0] * field.length
-            for v in values:
-                zone = next((i for i, b in enumerate(boundaries) if v < b), len(boundaries))
-                counts[min(zone, field.length - 1)] += 1
-            for i, seconds in enumerate(counts):
-                field.set_value(i, float(seconds))
-
-        fill("time_in_hr_zone", msg.hr_zone_high_boundary, [h for _, h, _ in samples if h])
-        fill("time_in_power_zone", msg.power_zone_high_boundary, [p or 0 for p, _, _ in samples])
