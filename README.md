@@ -1,5 +1,9 @@
 # zwift-garmin-sync
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Support on PayPal](https://img.shields.io/badge/support-PayPal-00457C?logo=paypal&logoColor=white)](https://paypal.me/emko80/5eur)
+[![Support on Revolut](https://img.shields.io/badge/support-Revolut-000000?logo=revolut&logoColor=white)](https://revolut.me/emilqzq8u?amount=500&currency=EUR)
+
 Makes a Zwift ride count in Garmin Connect as if it had been recorded by your Garmin device.
 
 When you ride Zwift with a Garmin watch running as an indoor ride, you end up with two recordings of the same ride:
@@ -179,6 +183,15 @@ python main.py -g path/to/garmin.fit -z path/to/zwift.fit -i <garmin-activity-id
 
 ---
 
+## Support the project
+
+If this tool saves you time, you can buy me a coffee. Thank you, it keeps the project going! ❤️
+
+[![PayPal](https://img.shields.io/badge/PayPal-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://paypal.me/emko80/5eur)
+[![Revolut](https://img.shields.io/badge/Revolut-000000?style=for-the-badge&logo=revolut&logoColor=white)](https://revolut.me/emilqzq8u?amount=500&currency=EUR)
+
+---
+
 ## Developer guide
 
 ### Project layout
@@ -286,20 +299,6 @@ with fitdecode.FitReader("fit/gX.fit") as fit:
         if frame.frame_type == fitdecode.FIT_FRAME_DATA and frame.name == "session":
             print({f.name: f.value for f in frame.fields if f.value is not None})
 ```
-
----
-
-## ☕ Support the Project (Donate)
-
-If you like this project, if it helped you, or if it saved you time, you can support me:
-
-* **PayPal:** [paypal.me/emko80](https://paypal.me/emko80/5eur)
-* **Revolut:** [revolut.me/emilqzq8u](https://revolut.me/emilqzq8u?amount=500&currency=EUR)
-
-[![PayPal](https://img.shields.io/badge/PayPal-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://paypal.me/emko80/5eur)
-[![Revolut](https://img.shields.io/badge/Revolut-000000?style=for-the-badge&logo=revolut&logoColor=white)](https://revolut.me/emilqzq8u?amount=500&currency=EUR)
-
-Any support is greatly appreciated and motivates me to continue development. Thank you! ❤️
 
 ---
 
