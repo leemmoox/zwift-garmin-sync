@@ -68,11 +68,34 @@ Garmin-only lap values that can't be recalculated from the per-second data are c
 
 ## Requirements
 
-- Python 3.12 or newer (required by `garminconnect`; developed with 3.14)
 - A Garmin Connect account and a Zwift account
 - A Garmin watch or bike computer recording the ride, ideally paired to your trainer or power meter and HR strap
+- Windows, macOS or Linux. Python is only needed if you run from source.
 
 ## Installation
+
+### Option 1: download the program (no Python needed)
+
+1. Download the file for your system from the [latest release](https://github.com/leemmoox/zwift-garmin-sync/releases/latest):
+
+   | System | File |
+   |---|---|
+   | Windows | `zwift-garmin-sync-windows-x64.zip` |
+   | macOS, Apple Silicon (M1 and newer) | `zwift-garmin-sync-macos-arm64.zip` |
+   | macOS, Intel | `zwift-garmin-sync-macos-intel.zip` |
+   | Linux | `zwift-garmin-sync-linux-x64.zip` |
+
+2. Unzip it into a folder of your choice. The program keeps its settings (`.env`) and downloaded rides (`fit/`) **in that folder**.
+3. Run it:
+   - **Windows:** double-click `zwift-garmin-sync.exe`. Windows SmartScreen may warn about an unknown publisher, because the program isn't signed. Click **More info → Run anyway**.
+   - **macOS:** open Terminal in the folder and run `./zwift-garmin-sync`. macOS blocks unsigned programs the first time. Either allow it in **System Settings → Privacy & Security → Open Anyway**, or run `xattr -d com.apple.quarantine zwift-garmin-sync` once.
+   - **Linux:** run `./zwift-garmin-sync` in a terminal.
+
+On the first run the program asks for your Zwift and Garmin logins and saves them in `.env` next to the program.
+
+### Option 2: run from source
+
+Needs Python 3.12 or newer (required by `garminconnect`; developed with 3.14).
 
 ```bash
 git clone https://github.com/leemmoox/zwift-garmin-sync.git
@@ -80,12 +103,13 @@ cd zwift-garmin-sync
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
 ```
 
-Then fill in `.env`.
+Run it with `python main.py`. Logins are asked for on the first run, or you can copy `.env.example` to `.env` and fill it in.
 
 ## Configuration (`.env`)
+
+The `.env` file is next to the program (or in the project folder when running from source). The first run creates it; edit it to change a login or a setting.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -106,7 +130,7 @@ Run all commands from the repository root with the virtualenv activated.
 
 ### Automatic mode (normal use)
 
-After the ride, once both the watch and Zwift have synced:
+After the ride, once both the watch and Zwift have synced, run the program (double-click on Windows), or from source:
 
 ```bash
 python main.py
@@ -119,7 +143,7 @@ python main.py
 5. **Deletes the original activity on Garmin Connect** and uploads the merged file.
 6. Renames the new activity to `<Zwift activity name> ✨`.
 
-Downloaded and generated files are kept in `fit/`:
+Downloaded and generated files are kept in `fit/` next to the program:
 
 | File | Content |
 |---|---|
@@ -134,16 +158,22 @@ If a `g…` or `z…` file already exists, it's used instead of downloading agai
 Use this when the ride you want isn't the latest one, or when you already have both FIT files:
 
 ```bash
-python main.py -g path/to/garmin.fit -z path/to/zwift.fit -i <garmin-activity-id> [-n "Activity name"] [-o merged.fit]
+python main.py -g path/to/garmin.fit -z path/to/zwift.fit [-i <garmin-activity-id>] [-n "Activity name"] [-o merged.fit]
 ```
+
+With the downloaded program, use `zwift-garmin-sync` (`zwift-garmin-sync.exe` on Windows) instead of `python main.py`.
+
+**Without `-i`**, only the merged file is written and nothing changes on Garmin Connect. You can then upload it yourself (Garmin Connect → Import Data). **With `-i`**, that activity is deleted and replaced by the merged file.
 
 | Flag | Meaning |
 |---|---|
 | `-g`, `--garmin` | Garmin FIT file (required) |
 | `-z`, `--zwift` | Zwift FIT file (required) |
-| `-i`, `--id` | ID of the Garmin Connect activity to replace: the number in the activity URL (required) |
+| `-i`, `--id` | ID of the Garmin Connect activity to replace: the number in the activity URL (optional, see above) |
 | `-n`, `--name` | Activity name. ✨ is appended; the default is `Zwift Activity ✨` |
 | `-o`, `--output` | Where to write the merged file (default `manual_fixed.fit`) |
+| `--debug` | Show full error details instead of a one-line message |
+| `--version` | Show the program version |
 
 ### Example output
 
@@ -198,7 +228,9 @@ If this tool saves you time, you can buy me a coffee. Thank you, it keeps the pr
 
 ```
 main.py                 CLI: automatic and manual mode
+zwift-garmin-sync.spec  PyInstaller build of the standalone program
 lib/
+├── app.py              Where .env and fit/ live, first-run setup, console handling
 ├── garmin/client.py    Garmin Connect API: login, download, delete, upload, rename
 ├── zwift/client.py     Zwift API: login, latest activity, FIT download
 └── fit/                FIT file processing (no network access)
@@ -289,6 +321,15 @@ python -c "from lib.fit import ActivityMerger; ActivityMerger('fit/gX.fit', 'fit
 python -c "from lib.fit import ActivityMerger; ActivityMerger('fit/gX.fit', 'fit/zX.fit', '/tmp/after.fit').process()"
 cmp /tmp/before.fit /tmp/after.fit
 ```
+
+### Releasing a new version
+
+1. Set the new version in `lib/__init__.py` (for example `__version__ = "1.1.0"`) and commit.
+2. Tag and push: `git tag v1.1.0 && git push origin main v1.1.0`.
+
+GitHub Actions (`.github/workflows/release.yml`) then runs the tests, checks that the tag matches the version, builds the program on Windows, macOS (Apple Silicon and Intel) and Linux, checks that each one starts, and attaches the zip files to the release. A test build without a release can be started by hand from the **Actions** tab.
+
+To build the program locally for your own system: `pip install pyinstaller && pyinstaller zwift-garmin-sync.spec` (output in `dist/`).
 
 To inspect any FIT file:
 

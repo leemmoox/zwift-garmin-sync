@@ -1,0 +1,87 @@
+# Builds standalone programs for Windows, macOS and Linux and attaches them to a GitHub release.
+# Release: bump __version__ in lib/__init__.py, commit, then push a matching tag (git tag v1.2.3 && git push origin v1.2.3).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:  # manual test build from the Actions tab (no release is created)
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows-x64
+          - os: macos-latest
+            target: macos-arm64
+          - os: macos-15-intel
+            target: macos-intel
+          - os: ubuntu-22.04  # older glibc, so the program also runs on older Linux distributions
+            target: linux-x64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt pyinstaller==6.22.3
+
+      - name: Run tests
+        run: python -m pytest -q  # ride-based tests are skipped here: rides are personal data and not in the repo
+
+      - name: Check the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version="$(python main.py --version | awk '{print $2}')"
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME does not match version $version in lib/__init__.py"; exit 1; }
+
+      - name: Build
+        run: pyinstaller --noconfirm zwift-garmin-sync.spec
+
+      - name: Check the program starts
+        run: |
+          exe=dist/zwift-garmin-sync; [ "$RUNNER_OS" = "Windows" ] && exe="$exe.exe"
+          "./$exe" --version
+
+      - name: Package
+        run: |
+          name="zwift-garmin-sync-${{ matrix.target }}"
+          mkdir "$name"
+          cp dist/zwift-garmin-sync* README.md LICENSE .env.example "$name/"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a "$name.zip" "$name" > /dev/null
+          else
+            zip -r "$name.zip" "$name" > /dev/null  # keeps the executable permission
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zwift-garmin-sync-${{ matrix.target }}
+          path: zwift-garmin-sync-${{ matrix.target }}.zip
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.zip
+          generate_release_notes: true

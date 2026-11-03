@@ -2,12 +2,10 @@ import os
 from datetime import datetime
 
 import requests
-from dotenv import load_dotenv
 
 
 class Zwift:
     def __init__(self, username=None, password=None):
-        load_dotenv()
         self.username = username or os.getenv("ZWIFT_USERNAME")
         self.password = password or os.getenv("ZWIFT_PASSWORD")
 

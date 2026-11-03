@@ -5,13 +5,11 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from dotenv import load_dotenv
 from garminconnect import Garmin as GarminClient
 
 
 class Garmin:
     def __init__(self, email=None, password=None):
-        load_dotenv()
         self.email = email or os.getenv("GARMIN_EMAIL")
         self.password = password or os.getenv("GARMIN_PASSWORD")
 

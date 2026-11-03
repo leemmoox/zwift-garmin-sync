@@ -1,14 +1,14 @@
 import argparse
 import os
 import sys
+import traceback
 
-from dotenv import load_dotenv
-
+from lib import __version__
+from lib.app import FIT_DIR, configure_console, ensure_credentials, load_settings, pause_if_double_clicked
 from lib.fit import ActivityMerger
 from lib.garmin import Garmin
 from lib.zwift import Zwift
 
-FIT_DIR = "fit"
 SYNC_TAG = "✨"
 
 
@@ -21,6 +21,7 @@ def tag_name(name):
 def run_automated():
     """Automatický režim: Stiahne z API, skontroluje cache, opaví a nahradí na Garmine."""
     os.makedirs(FIT_DIR, exist_ok=True)
+    ensure_credentials("garmin", "zwift")
 
     # 1. Authenticate & fetch Garmin activity first
     garmin_client = Garmin()
@@ -31,7 +32,7 @@ def run_automated():
         # Ak už aktivita obsahuje ✨, pipeline sa preskočí
         if SYNC_TAG in latest_garmin_name:
             print(f"✨ Activity '{latest_garmin_name}' is already synced and patched!")
-            sys.exit(0)
+            return
 
     # 2. Fetch Zwift activity & formatted name
     zwift_client = Zwift()
@@ -65,7 +66,7 @@ def run_automated():
 
 
 def run_manual(garmin_path, zwift_path, activity_id, custom_name, output_path):
-    """Manuálny režim: Spracuje zadané lokálne FIT súbory a nahradí aktivitu na Garmine."""
+    """Manuálny režim: Spracuje zadané lokálne FIT súbory; s ID aktivity ju aj nahradí na Garmine."""
     merger = ActivityMerger(
         garmin_path=garmin_path,
         zwift_path=zwift_path,
@@ -73,6 +74,12 @@ def run_manual(garmin_path, zwift_path, activity_id, custom_name, output_path):
     )
     merger.process()
     activity_name = tag_name(custom_name)
+
+    if not activity_id:
+        print(f"\nMerged file saved as '{output_path}'. Nothing was changed on Garmin Connect.")
+        print("Upload it yourself (Garmin Connect → Import Data), or pass -i <activity ID> to replace an activity.")
+        return
+    ensure_credentials("garmin")
 
     print(f"\nInitiating Garmin Connect replacement for Activity ID {activity_id}...")
     garmin_client = Garmin()
@@ -83,42 +90,36 @@ def run_manual(garmin_path, zwift_path, activity_id, custom_name, output_path):
     )
 
 
-if __name__ == "__main__":
-    # Load .env before anything reads settings (e.g. MAX_TIME_DIFF_SEC in the merger)
-    load_dotenv()
-
+def parse_args():
     parser = argparse.ArgumentParser(
-        description="Zwift to Garmin FIT Sync & Merger. Runs automatically if no flags are provided."
+        prog="zwift-garmin-sync",
+        description="Merges your latest Zwift ride into your Garmin watch recording and replaces it on "
+                    "Garmin Connect. Runs automatically if no files are given.",
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument("-g", "--garmin", help="Path to local Garmin FIT file (manual mode)")
+    parser.add_argument("-z", "--zwift", help="Path to local Zwift FIT file (manual mode)")
     parser.add_argument(
-        "-g", "--garmin", help="Path to local Garmin FIT file (Manual mode)"
+        "-i", "--id",
+        help="Garmin activity ID to delete and replace (manual mode). Without it, only the merged file is written.",
     )
+    parser.add_argument("-n", "--name", default=None, help="Custom title for the activity")
     parser.add_argument(
-        "-z", "--zwift", help="Path to local Zwift FIT file (Manual mode)"
-    )
-    parser.add_argument(
-        "-i", "--id", help="Garmin Activity ID to delete and replace (Manual mode)"
-    )
-    parser.add_argument(
-        "-n", "--name", default=None, help="Custom title for the activity"
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        default="manual_fixed.fit",
+        "-o", "--output", default="manual_fixed.fit",
         help="Output path for merged FIT file (default: manual_fixed.fit)",
     )
+    parser.add_argument("--debug", action="store_true", help="Show full error details")
+    return parser.parse_args()
 
-    args = parser.parse_args()
 
-    # Ak sú zadané manuálne argumenty, overíme ich prítomnosť
+def main():
+    args = parse_args()
+    # Load .env before anything reads settings (e.g. MAX_TIME_DIFF_SEC in the merger)
+    load_settings()
+
     if args.garmin or args.zwift or args.id:
-        if not (args.garmin and args.zwift and args.id):
-            print(
-                "❌ Error: Manual mode requires all three flags: -g (Garmin FIT), -z (Zwift FIT), and -i (Garmin Activity ID)."
-            )
-            sys.exit(1)
-
+        if not (args.garmin and args.zwift):
+            raise ValueError("Manual mode needs both -g (Garmin FIT) and -z (Zwift FIT).")
         run_manual(
             garmin_path=args.garmin,
             zwift_path=args.zwift,
@@ -129,3 +130,20 @@ if __name__ == "__main__":
     else:
         # Bez argumentov spustíme plnú automatiku
         run_automated()
+
+
+if __name__ == "__main__":
+    configure_console()
+    exit_code = 0
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        exit_code = 130
+    except Exception as e:
+        if "--debug" in sys.argv:
+            traceback.print_exc()
+        print(f"\n❌ Error: {e}")
+        exit_code = 1
+    pause_if_double_clicked()
+    sys.exit(exit_code)
