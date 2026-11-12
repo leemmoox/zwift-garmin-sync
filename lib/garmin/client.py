@@ -2,7 +2,7 @@ import io
 import os
 import time
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from garminconnect import Garmin as GarminClient
@@ -33,30 +33,43 @@ class Garmin:
         except Exception as e:
             raise Exception(f"Garmin authentication failed: {e}") from e
 
-    def download_latest_activity_fit(self, folder="fit") -> tuple[str, str, str]:
+    def find_activity_for_ride(self, ride_start, ride_end, count=10):
+        """Of the latest `count` activities, the one overlapping the ride (UTC seconds) the most.
+
+        Returns (activity, overlapping seconds), or (None, 0) when none overlaps. Runs,
+        outdoor rides and other activities around the Zwift ride don't overlap it.
         """
-        Downloads latest Garmin activity FIT file or loads from fit/gYYYYMMDD-HHMM.fit if exists.
+        print(f"Looking for the matching ride among the last {count} Garmin Connect activities...")
+        best, best_overlap = None, 0
+        for activity in self.client.get_activities(0, count) or []:
+            start_gmt = activity.get("startTimeGMT")
+            if not start_gmt:
+                continue
+            start = datetime.strptime(start_gmt, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+            duration = activity.get("elapsedDuration") or activity.get("duration") or 0
+            overlap = min(start + duration, ride_end) - max(start, ride_start)
+            if overlap > best_overlap:
+                best, best_overlap = activity, overlap
+        return best, best_overlap
+
+    def download_activity_fit(self, activity, folder="fit") -> tuple[str, str, str]:
+        """
+        Downloads the activity's original FIT file, or loads it from fit/gYYYYMMDD-HHMM.fit if it exists.
         Returns tuple: (activity_id, file_path, formatted_timestamp)
         """
         os.makedirs(folder, exist_ok=True)
 
-        print("Fetching latest activities from Garmin Connect...")
-        activities = self.client.get_activities(0, 1)
+        activity_id = str(activity.get("activityId"))
+        activity_name = activity.get("activityName", "Unknown Activity")
 
-        if not activities:
-            raise Exception("No activities found on Garmin Connect.")
-
-        latest = activities[0]
-        activity_id = str(latest.get("activityId"))
-        activity_name = latest.get("activityName", "Unknown Activity")
-
-        start_str = latest.get("startTimeLocal", "")
+        start_str = activity.get("startTimeLocal", "")
         dt = datetime.strptime(start_str, "%Y-%m-%d %H:%M:%S")
         timestamp = dt.strftime("%Y%m%d-%H%M")
 
         file_path = os.path.join(folder, f"g{timestamp}.fit")
 
-        print(f"-> Latest Garmin activity found: '{activity_name}' (ID: {activity_id})")
+        activity_type = (activity.get("activityType") or {}).get("typeKey", "unknown type")
+        print(f"-> Garmin activity: '{activity_name}' ({activity_type}, ID: {activity_id})")
 
         # Kontrola cache ihneď pred výpisom o sťahovaní
         if os.path.exists(file_path):

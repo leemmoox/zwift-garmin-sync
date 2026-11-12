@@ -151,10 +151,10 @@ After the ride, once both the watch and Zwift have synced, run the program (doub
 python main.py
 ```
 
-1. Gets your latest Garmin Connect activity. If its name already contains ✨, the tool stops because that ride is already merged.
-2. Gets your latest Zwift activity and downloads its FIT file.
-3. Downloads the original FIT file of the latest Garmin activity.
-4. Checks both files are the same ride, aligns them, merges them and verifies the result.
+1. Gets your latest Zwift activity and downloads its FIT file.
+2. Finds the Garmin Connect activity recorded during that ride: of your last 10 activities, the one that overlaps the Zwift ride the most. Runs, outdoor rides and other activities before or after the ride are skipped. If that activity's name already contains ✨, the tool stops because the ride is already merged.
+3. Downloads the original FIT file of that Garmin activity.
+4. Checks both files are the same ride, aligns them, repairs heart rate if needed, merges them and verifies the result.
 5. **Deletes the original activity on Garmin Connect** and uploads the merged file.
 6. Renames the new activity to `<Zwift activity name> ✨`.
 
@@ -221,7 +221,8 @@ With the downloaded program, use `zwift-garmin-sync` (`zwift-garmin-sync.exe` on
 
 | Problem | Cause / fix |
 |---|---|
-| `Watch covers only X% of the Zwift ride` | The latest Garmin and Zwift activities aren't the same ride (for example, the watch hasn't synced yet). Wait for the sync, or use manual mode. |
+| `No Garmin Connect activity overlaps the Zwift ride` | The watch hasn't synced the ride to Garmin Connect yet, or it isn't among your last 10 activities. Wait for the sync, or use manual mode. |
+| `Watch covers only X% of the Zwift ride` | The watch recorded less than `MIN_OVERLAP_PCT` of the Zwift ride (for example, it was started very late). Merge it in manual mode with a lower `MIN_OVERLAP_PCT`, or leave it. |
 | `Activity '…' is already synced and patched!` | The latest Garmin activity already has ✨. Nothing to do. |
 | `Could not find the uploaded activity; rename it manually` | Garmin processed the upload too slowly. The activity is uploaded, just not renamed. |
 | Garmin authentication fails / HTTP 429 | Too many logins. Wait a while; the tokens in `~/.garminconnect` prevent this on later runs. |
@@ -330,6 +331,7 @@ Most tests use **your own rides**: the watch and Zwift files the app keeps in `f
 | `test_watch_calibration.py` | `stats.py` reproduces the watch's own session and lap values from its records |
 | `test_heart_rate.py` | A heart rate frozen on purpose in a real ride is replaced with Zwift's, and ride totals and zones come out as without the freeze; good heart rate is left alone |
 | `test_align.py` | A recording cut at both ends and refilled from Zwift matches the full recording; cut files stay consistent; an unrelated activity is refused; unmodified files re-encode byte-identically |
+| `test_garmin_match.py` | Automatic mode picks the Garmin activity that overlaps the Zwift ride, not a run or ride before or after it |
 | `test_zwift_track.py` | `ZwiftTrack` lookups on synthetic data |
 
 For a pure refactor, also compare output files before and after the change. They should be byte-identical:

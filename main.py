@@ -2,10 +2,12 @@ import argparse
 import os
 import sys
 import traceback
+from datetime import datetime
 
 from lib import __version__
 from lib.app import FIT_DIR, configure_console, ensure_credentials, load_settings, pause_if_double_clicked
 from lib.fit import ActivityMerger
+from lib.fit.zwift_track import read_zwift_fit
 from lib.garmin import Garmin
 from lib.zwift import Zwift
 
@@ -19,34 +21,34 @@ def tag_name(name):
 
 
 def run_automated():
-    """Automatický režim: Stiahne z API, skontroluje cache, opaví a nahradí na Garmine."""
+    """Automatický režim: nájde poslednú jazdu zo Zwiftu a k nej aktivitu na Garmine, zlúči a nahradí."""
     os.makedirs(FIT_DIR, exist_ok=True)
     ensure_credentials("garmin", "zwift")
 
-    # 1. Authenticate & fetch Garmin activity first
-    garmin_client = Garmin()
-    activities = garmin_client.client.get_activities(0, 1)
-
-    if activities:
-        latest_garmin_name = activities[0].get("activityName", "")
-        # Ak už aktivita obsahuje ✨, pipeline sa preskočí
-        if SYNC_TAG in latest_garmin_name:
-            print(f"✨ Activity '{latest_garmin_name}' is already synced and patched!")
-            return
-
-    # 2. Fetch Zwift activity & formatted name
+    # 1. Latest Zwift ride, and its exact start/end from the FIT file
     zwift_client = Zwift()
     zwift_act = zwift_client.get_latest_activity()
-
     activity_name = tag_name(zwift_act.get("name"))
     print(f"-> Target activity name: '{activity_name}'")
+    zwift_fit, _ = zwift_client.get_fit_file(zwift_act, folder=FIT_DIR)
+    track = read_zwift_fit(zwift_fit).track
 
-    zwift_fit, z_time = zwift_client.get_fit_file(zwift_act, folder=FIT_DIR)
+    # 2. The Garmin activity recorded during that ride (skips runs, outdoor rides, ...)
+    garmin_client = Garmin()
+    activity, overlap = garmin_client.find_activity_for_ride(track.start, track.end)
+    if activity is None:
+        ride_time = datetime.fromtimestamp(track.start).strftime("%Y-%m-%d %H:%M")
+        raise ValueError(
+            f"No Garmin Connect activity overlaps the Zwift ride from {ride_time}. "
+            "Has the watch synced to Garmin Connect yet?"
+        )
+    garmin_name = activity.get("activityName", "")
+    if SYNC_TAG in garmin_name:
+        print(f"✨ Activity '{garmin_name}' is already synced and patched!")
+        return
 
     # 3. Download raw FIT from Garmin
-    old_activity_id, garmin_fit, g_time = garmin_client.download_latest_activity_fit(
-        folder=FIT_DIR
-    )
+    old_activity_id, garmin_fit, g_time = garmin_client.download_activity_fit(activity, folder=FIT_DIR)
 
     # 4. Merge data
     output_file = os.path.join(FIT_DIR, f"f{g_time}.fit")
