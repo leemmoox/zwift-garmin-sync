@@ -1,6 +1,7 @@
 """End-to-end checks of merged files, for every ride pair in the local FIT cache."""
 
 from functools import lru_cache
+from itertools import groupby
 
 import pytest
 from fit_tool.fit_file import FitFile
@@ -39,14 +40,32 @@ def test_other_messages_kept(ride):
         assert merged[name] == watch[name], name
 
 
+def frozen_times(records, min_seconds=30):
+    """Timestamps inside runs of one repeated heart rate lasting at least min_seconds."""
+    times = set()
+    for value, group in groupby(records, key=lambda r: r.get("heart_rate")):
+        group = list(group)
+        if value and (group[-1]["timestamp"] - group[0]["timestamp"]).total_seconds() + 1 >= min_seconds:
+            times.update(r["timestamp"] for r in group)
+    return times
+
+
 def test_watch_sensor_data_kept(ride):
-    """Power, HR and cadence of every second the watch recorded are unchanged."""
-    watch = {r["timestamp"]: r for r in ride["watch"]["record"]}
+    """Power and cadence are unchanged; heart rate changes only where the watch had none or it was
+    frozen, and then to Zwift's value."""
+    watch_records = ride["watch"]["record"]
+    watch = {r["timestamp"]: r for r in watch_records}
+    zwift_hr = {r["timestamp"]: r.get("heart_rate") for r in ride["zwift"]["record"]}
+    frozen = frozen_times(watch_records)
     for r in ride["merged"]["record"]:
         original = watch.get(r["timestamp"])
-        if original:
-            for field in ("power", "heart_rate", "cadence"):
-                assert r.get(field) == original.get(field), (r["timestamp"], field)
+        if not original:
+            continue
+        for field in ("power", "cadence"):
+            assert r.get(field) == original.get(field), (r["timestamp"], field)
+        if r.get("heart_rate") != original.get("heart_rate"):
+            assert r["heart_rate"] == zwift_hr.get(r["timestamp"]), r["timestamp"]
+            assert original.get("heart_rate") is None or r["timestamp"] in frozen, r["timestamp"]
 
 
 def test_watch_training_data_kept(ride):

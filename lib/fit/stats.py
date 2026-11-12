@@ -85,7 +85,6 @@ def recompute_stats(msg, window, threshold_power=None):
     if not samples:
         return
     power = [s.power or 0 for s in samples]
-    hr = [s.heart_rate for s in samples if s.heart_rate]
     cadence = [s.cadence for s in samples if s.cadence]
 
     work = window.work
@@ -97,9 +96,7 @@ def recompute_stats(msg, window, threshold_power=None):
     set_if_defined(msg, "max_power", max(power))
     set_if_defined(msg, "normalized_power", round(normalized))
     set_if_defined(msg, "total_work", work)
-    if hr:
-        set_if_defined(msg, "avg_heart_rate", round(sum(hr) / len(hr)))
-        set_if_defined(msg, "max_heart_rate", max(hr))
+    recompute_heart_rate(msg, window)
     if cadence:
         set_if_defined(msg, "avg_cadence", int(sum(cadence) / len(cadence)))
         set_if_defined(msg, "max_cadence", max(cadence))
@@ -113,8 +110,16 @@ def recompute_stats(msg, window, threshold_power=None):
         set_if_defined(msg, "training_stress_score", duration * intensity**2 / 3600 * 100)
 
 
-def recompute_zones(msg, window):
-    """Sets time in HR and power zones of a time_in_zone message from the window."""
+def recompute_heart_rate(msg, window):
+    """Sets average and maximum heart rate."""
+    hr = [s.heart_rate for s in window.samples if s.heart_rate]
+    if hr:
+        set_if_defined(msg, "avg_heart_rate", round(sum(hr) / len(hr)))
+        set_if_defined(msg, "max_heart_rate", max(hr))
+
+
+def recompute_zones(msg, window, power=True):
+    """Sets time in HR zones, and unless power=False also power zones, of a time_in_zone message."""
     durations = window.durations()
 
     def fill(field_name, boundaries, values):
@@ -130,5 +135,6 @@ def recompute_zones(msg, window):
 
     fill("time_in_hr_zone", msg.hr_zone_high_boundary,
          [(s.heart_rate, d) for s, d in zip(window.samples, durations) if s.heart_rate])
-    fill("time_in_power_zone", msg.power_zone_high_boundary,
-         [(s.power or 0, d) for s, d in zip(window.samples, durations)])
+    if power:
+        fill("time_in_power_zone", msg.power_zone_high_boundary,
+             [(s.power or 0, d) for s, d in zip(window.samples, durations)])

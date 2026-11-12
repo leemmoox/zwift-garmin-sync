@@ -11,7 +11,8 @@ from lib.fit.utils import SEMICIRCLES_TO_DEG, add_field_definitions, secs, set_f
 
 # Fields written into Garmin messages. Missing ones (e.g. GPS/altitude, which the watch
 # does not record indoors) are added to the message definitions before writing.
-RECORD_FIELDS = ["distance", "enhanced_speed", "enhanced_altitude", "position_lat", "position_long"]
+# heart_rate: may have been repaired from Zwift (lib/fit/heart_rate.py)
+RECORD_FIELDS = ["distance", "enhanced_speed", "enhanced_altitude", "position_lat", "position_long", "heart_rate"]
 SUMMARY_FIELDS = [
     "sport", "sub_sport", "total_distance", "total_ascent", "total_descent",
     "avg_speed", "max_speed", "enhanced_avg_speed", "enhanced_max_speed",

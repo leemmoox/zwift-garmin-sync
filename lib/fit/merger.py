@@ -5,6 +5,7 @@ from fit_tool.fit_file import FitFile
 
 from lib.fit.align import Aligner, ride_window
 from lib.fit.enrich import apply_zwift_data
+from lib.fit.heart_rate import HeartRateRepair
 from lib.fit.laps import LapRebuilder
 from lib.fit.verify import verify_output
 from lib.fit.zwift_track import read_zwift_fit
@@ -12,8 +13,8 @@ from lib.fit.zwift_track import read_zwift_fit
 
 class ActivityMerger:
     """Pipeline: read Zwift data -> check both files are the same ride -> align the watch
-    recording to the Zwift ride -> rebuild laps -> write Zwift data into the watch file
-    -> save -> verify."""
+    recording to the Zwift ride -> repair heart rate -> rebuild laps -> write Zwift data into
+    the watch file -> save -> verify."""
 
     def __init__(self, garmin_path, zwift_path, output_path="garmin_fixed.fit"):
         self.garmin_path = garmin_path
@@ -51,20 +52,24 @@ class ActivityMerger:
         aligner.run()
         self.start_time = datetime.fromtimestamp(aligner.new_start, tz=timezone.utc)
 
+        heart_rate = HeartRateRepair(garmin_fit, ride.track)
+        heart_rate.run()
+        print(f"\n3. Heart rate: {heart_rate.describe()}")
+
         rebuilder = LapRebuilder(garmin_fit, ride)
-        print(f"\n3. Laps: {rebuilder.describe()}")
+        print(f"\n4. Laps: {rebuilder.describe()}")
         rebuilder.run()
 
-        print("\n4. Merging Zwift data into Garmin records...")
+        print("\n5. Merging Zwift data into Garmin records...")
         records, laps = apply_zwift_data(garmin_fit, ride)
         print(f"    ✅ Updated {records} records and {laps} laps")
 
-        print(f"\n5. Saving merged file to '{self.output_path}'...")
+        print(f"\n6. Saving merged file to '{self.output_path}'...")
         # Full re-encode: definitions changed, so original bytes cannot be reused
         garmin_fit.to_file(self.output_path, preserve=False)
         print("    ✅ Merged FIT file created successfully!")
 
-        print("\n6. Verifying output file...")
+        print("\n7. Verifying output file...")
         verify_output(self.output_path, ride.distance, records)
         print("\n✅ Done! The file is verified and ready to be uploaded to Garmin Connect.")
 

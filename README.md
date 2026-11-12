@@ -24,7 +24,7 @@ It also corrects for starting or stopping the watch at the wrong time. Watch dat
 
 **From the watch (kept unchanged):**
 - device identity: Garmin manufacturer, model and serial number
-- heart rate, power and cadence
+- heart rate, power and cadence (heart rate is repaired from Zwift if the watch lost the HR strap, see [Heart rate](#heart-rate))
 - Training Effect, training load, threshold power, workout feel/RPE
 - every Garmin-specific message, including the undocumented ones
 
@@ -65,6 +65,21 @@ For every rebuilt lap, the following are recalculated from the per-second data:
 - time in HR and power zones
 
 Garmin-only lap values that can't be recalculated from the per-second data are copied from the watch lap that overlaps the new lap the most. Session totals (including Training Effect and training load) are never affected by how the laps are split.
+
+## Heart rate
+
+Sometimes the watch loses the connection to the HR strap during the ride. It doesn't always show this as missing heart rate: it can keep recording the **last value** for the rest of the ride (for example 137 bpm for an hour). Zwift, connected to the same strap on its own, usually still has the real heart rate, so the tool repairs it:
+
+| Watch heart rate | What happens |
+|---|---|
+| **Frozen:** one value repeated for at least 30 s while Zwift's heart rate changes by at least 5 bpm | Replaced with Zwift's heart rate |
+| **Missing** for some seconds | Filled from Zwift |
+| Steady (one value for a while, Zwift shows the same) | Left alone. Real heart rate can stay on one value for about a minute. |
+| Frozen, but Zwift lost the strap too | Left as recorded, with a ⚠️ warning in the output |
+
+Average/max heart rate and time in HR zones of the ride and the affected laps are then recalculated. Power, cadence and power zones stay exactly as the watch recorded them.
+
+**Training Effect and training load can't be repaired:** the watch calculates them during the ride from the heart rate it had, frozen value included.
 
 ## Requirements
 
@@ -195,7 +210,7 @@ With the downloaded program, use `zwift-garmin-sync` (`zwift-garmin-sync.exe` on
 ## Limitations and things to know
 
 - **The original activity is deleted before the upload.** Garmin rejects a re-upload of the same recording while the original exists, so it can't be the other way round. The merged file is fully built and verified before anything is deleted, and the original FIT file stays in `fit/`. If the upload fails, upload that file manually in Garmin Connect (Import Data).
-- **Training Effect and training load** are calculated by the watch while you ride and are kept as they are. Garmin Connect doesn't recalculate them from an uploaded file, so seconds filled in from Zwift aren't included, and seconds that were cut off still are.
+- **Training Effect and training load** are calculated by the watch while you ride and are kept as they are. Garmin Connect doesn't recalculate them from an uploaded file, so seconds filled in from Zwift aren't included, seconds that were cut off still are, and a frozen heart rate (see [Heart rate](#heart-rate)) still affects them.
 - **FTP auto-detection** happens on the device during the ride. Re-uploading a file doesn't trigger it.
 - **Rebuilt laps** copy the Garmin-only lap fields that can't be recalculated from the per-second data (for example Garmin's proprietary lap values) from the watch lap they overlap most.
 - **Map location:** Zwift worlds are placed at real coordinates (for example, Watopia is near the Solomon Islands), so that's where the map shows your ride.
@@ -238,6 +253,7 @@ lib/
     ├── merger.py       ActivityMerger: the pipeline below
     ├── zwift_track.py  Reads the Zwift FIT file into per-second samples (ZwiftTrack)
     ├── align.py        Cuts/extends the watch recording to the Zwift ride window
+    ├── heart_rate.py   Replaces frozen or missing watch heart rate with Zwift's
     ├── laps.py         Rebuilds laps: Zwift workout intervals, or auto-laps on Zwift distance
     ├── enrich.py       Writes Zwift data into watch records and lap/session totals
     ├── stats.py        Recalculates lap/session summaries the way the watch does
@@ -251,8 +267,8 @@ tests/                  pytest suite (see "Tests" below)
 ### The pipeline (`ActivityMerger.process`)
 
 ```
-read Zwift FIT ──► check overlap ──► align ──► laps ──► enrich ──► save ──► verify
- zwift_track.py      merger.py      align.py  laps.py  enrich.py           verify.py
+read Zwift FIT ──► check overlap ──► align ──► heart rate ──► laps ──► enrich ──► save ──► verify
+ zwift_track.py      merger.py      align.py  heart_rate.py  laps.py  enrich.py           verify.py
 ```
 
 1. **Read Zwift** (`read_zwift_fit` → `ZwiftRide`): reads the session totals, the lap start times, and one sample per second: distance, speed, altitude, position, power, HR and cadence.
@@ -263,10 +279,11 @@ read Zwift FIT ──► check overlap ──► align ──► laps ──► 
    - moves the first lap/session start and last lap/session end, and renumbers laps
    - rebuilds the accumulated-power counter so it starts at 0, keeping the power meter's own increments
    - recalculates power, NP, work, HR, cadence, calories, TSS/IF and time in zones for the session and the affected laps
-4. **Laps** (`LapRebuilder`): if Zwift has more than one lap, each Zwift lap becomes a lap. Otherwise, if all watch laps are distance auto-laps, they're re-split every N km of Zwift distance, where N is the watch's auto-lap distance. Each new lap is a copy of the watch lap it overlaps most, with times, stats, calories (its share of the session's work) and time in zones recalculated. Manual laps are left alone.
-5. **Enrich** (`apply_zwift_data`): for every record, sets distance, speed, altitude and position from the Zwift sample at that timestamp. For every lap, sets distance, ascent, descent, average/max speed and start/end position for the lap's time window. The session gets Zwift's totals and the route's bounding box. Sport/sub-sport become `cycling/virtual_activity`.
-6. **Save**: does a full re-encode (`to_file(preserve=False)`).
-7. **Verify**: re-reads the output with `fitdecode` and checks the record count and session distance.
+4. **Heart rate** (`HeartRateRepair`): finds runs of one repeated heart rate (≥ 30 s) during which Zwift's heart rate varies (≥ 5 bpm) and replaces them with Zwift's, fills seconds without heart rate from Zwift, and recalculates average/max heart rate and HR zone time of the session and affected laps. Long frozen runs without Zwift heart rate are only reported.
+5. **Laps** (`LapRebuilder`): if Zwift has more than one lap, each Zwift lap becomes a lap. Otherwise, if all watch laps are distance auto-laps, they're re-split every N km of Zwift distance, where N is the watch's auto-lap distance. Each new lap is a copy of the watch lap it overlaps most, with times, stats, calories (its share of the session's work) and time in zones recalculated. Manual laps are left alone.
+6. **Enrich** (`apply_zwift_data`): for every record, sets distance, speed, altitude and position from the Zwift sample at that timestamp. For every lap, sets distance, ascent, descent, average/max speed and start/end position for the lap's time window. The session gets Zwift's totals and the route's bounding box. Sport/sub-sport become `cycling/virtual_activity`.
+7. **Save**: does a full re-encode (`to_file(preserve=False)`).
+8. **Verify**: re-reads the output with `fitdecode` and checks the record count and session distance.
 
 ### FIT file notes (useful when changing `lib/fit`)
 
@@ -309,8 +326,9 @@ Most tests use **your own rides**: the watch and Zwift files the app keeps in `f
 
 | File | Checks |
 |---|---|
-| `test_merge.py` | For every ride: device identity and other messages kept, watch power/HR/cadence unchanged, distance/GPS on every record, session = Zwift distance, bounding box contains the route, laps follow each other and add up to the session, each lap has time in zones, workout intervals = Zwift laps, free-ride laps = auto-lap distance |
+| `test_merge.py` | For every ride: device identity and other messages kept, watch power/cadence unchanged and HR changed only where missing or frozen, distance/GPS on every record, session = Zwift distance, bounding box contains the route, laps follow each other and add up to the session, each lap has time in zones, workout intervals = Zwift laps, free-ride laps = auto-lap distance |
 | `test_watch_calibration.py` | `stats.py` reproduces the watch's own session and lap values from its records |
+| `test_heart_rate.py` | A heart rate frozen on purpose in a real ride is replaced with Zwift's, and ride totals and zones come out as without the freeze; good heart rate is left alone |
 | `test_align.py` | A recording cut at both ends and refilled from Zwift matches the full recording; cut files stay consistent; an unrelated activity is refused; unmodified files re-encode byte-identically |
 | `test_zwift_track.py` | `ZwiftTrack` lookups on synthetic data |
 
